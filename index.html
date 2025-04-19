@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Shell</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/lucide-static@0.338.0/icons/cleaning-services.svg" rel="icon">
+  <style>
+    body {
+      font-family: monospace;
+    }
+    .tab.active {
+      border-bottom: 2px solid white;
+    }
+    /* Hide scrollbar but keep functionality */
+    .scrollbar-hidden::-webkit-scrollbar {
+      display: none;
+    }
+    .scrollbar-hidden {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col">
+  <header class="p-4 flex flex-col sm:flex-row items-center justify-between bg-gray-800">
+    <div class="text-xl font-bold mb-2 sm:mb-0">Remote Terminal</div>
+    <div class="flex flex-wrap gap-2">
+      <button id="themeToggle" class="px-4 py-2 text-sm sm:text-base bg-gray-700 rounded hover:bg-gray-600">🌓 Тема</button>
+      <button id="exportBtn" class="px-4 py-2 text-sm sm:text-base bg-blue-700 rounded hover:bg-blue-600">📤 Экспорт</button>
+      <button id="clearBtn" class="px-4 py-2 text-sm sm:text-base bg-red-600 rounded hover:bg-red-500">🧹 Очистить</button>
+    </div>
+  </header>
+
+  <div id="tabs" class="flex flex-wrap border-b border-gray-700 overflow-x-auto scrollbar-hidden"></div>
+
+  <main class="flex-1 p-4 overflow-auto">
+    <div id="output" class="whitespace-pre-wrap mb-4 text-sm sm:text-base bg-gray-800 p-4 rounded max-h-[60vh] overflow-y-auto"></div>
+    <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+      <input id="input" type="text" placeholder="Введите команду..." class="w-full px-3 py-2 text-sm sm:text-base bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-green-600" />
+      <button id="sendBtn" class="px-4 py-2 text-sm sm:text-base bg-green-600 rounded hover:bg-green-500">Отправить</button>
+    </div>
+    <ul id="suggestions" class="mt-2 text-xs sm:text-sm text-gray-300"></ul>
+  </main>
+
+  <aside class="p-4 bg-gray-800 text-sm">
+    <div>💡 <b>Статус:</b> <span id="status">⏳ Ожидание</span></div>
+    <div class="mt-2"><b>Отладка:</b></div>
+    <pre id="debug" class="text-xs bg-black p-2 h-24 overflow-y-auto rounded"></pre>
+  </aside>
+
+  <script>
+    let socket;
+    let sessionId = 0;
+    const sessions = new Map();
+
+    function createSessionTab(id) {
+      const tab = document.createElement('button');
+      tab.textContent = `Сессия ${id}`;
+      tab.className = 'tab px-3 py-2 text-sm sm:text-base bg-gray-700 hover:bg-gray-600 whitespace-nowrap';
+      tab.onclick = () => selectSession(id);
+      document.getElementById('tabs').appendChild(tab);
+    }
+
+    function selectSession(id) {
+      sessionId = id;
+      document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === id));
+      document.getElementById('output').textContent = sessions.get(id)?.output || '';
+      document.getElementById('debug').textContent = sessions.get(id)?.debug || '';
+    }
+
+    function initSocket(id) {
+      const sock = new WebSocket('ws://localhost:8080');
+      sock.onmessage = ({ data }) => {
+        const parsed = JSON.parse(data);
+        const current = sessions.get(id);
+
+        if (parsed.result) {
+          current.output += parsed.result + '\n';
+          document.getElementById('status').textContent = '✅ Успешно';
+        } else if (parsed.error) {
+          current.output += '❌ ' + parsed.error + '\n';
+          document.getElementById('status').textContent = '❌ Ошибка';
+        }
+
+        document.getElementById('output').textContent = current.output;
+        sessions.set(id, current);
+      };
+      return sock;
+    }
+
+    function sendCommand() {
+      const input = document.getElementById('input');
+      const command = input.value.trim();
+      if (!command) return;
+
+      const current = sessions.get(sessionId);
+      current.output += `> ${command}\n`;
+      current.debug += `[${new Date().toLocaleTimeString()}] ${command}\n`;
+      document.getElementById('output').textContent = current.output;
+      document.getElementById('debug').textContent = current.debug;
+      current.socket.send(JSON.stringify({ command, token: 'token' }));
+
+      fetch('/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+
+      input.value = '';
+      document.getElementById('status').textContent = '⏳ Выполняется...';
+    }
+
+    function addSession() {
+      const id = sessions.size;
+      const socket = initSocket(id);
+      sessions.set(id, { socket, output: '', debug: '' });
+      createSessionTab(id);
+      if (id === 0) selectSession(0);
+    }
+
+    document.getElementById('sendBtn').onclick = sendCommand;
+    document.getElementById('clearBtn').onclick = () => {
+      sessions.get(sessionId).output = '';
+      sessions.get(sessionId).debug = '';
+      document.getElementById('output').textContent = '';
+      document.getElementById('debug').textContent = '';
+    };
+    document.getElementById('exportBtn').onclick = () => {
+      const content = sessions.get(sessionId).output;
+      const blob = new Blob([content], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'command_history.txt';
+      a.click();
+    };
+    document.getElementById('themeToggle').onclick = () => {
+      const html = document.documentElement;
+      html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.body.classList.toggle('bg-white');
+      document.body.classList.toggle('text-black');
+    };
+
+    // Autocomplete suggestions
+    const commands = ['ls', 'pwd', 'cd', 'mkdir', 'rm', 'echo', 'cat', 'grep', 'ps', 'whoami'];
+    const input = document.getElementById('input');
+    input.addEventListener('input', () => {
+      const val = input.value.toLowerCase();
+      const match = commands.filter(cmd => cmd.startsWith(val)).slice(0, 5);
+      document.getElementById('suggestions').innerHTML = match.map(m => `<li class="cursor-pointer hover:bg-gray-700 p-1 rounded">${m}</li>`).join('');
+    });
+    document.getElementById('suggestions').addEventListener('click', (e) => {
+      if (e.target.tagName === 'LI') {
+        input.value = e.target.textContent;
+        document.getElementById('suggestions').innerHTML = '';
+      }
+    });
+
+    // Initialize first session
+    addSession();
+  </script>
+</body>
+</html>
